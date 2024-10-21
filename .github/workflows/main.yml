@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: tik-tac-toe-fast
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 8000
+    port: 8000  # Ensure this matches the port in the startCommand

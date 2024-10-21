@@ -1,89 +1,96 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, conlist, ValidationError
-from typing import List, Union
-import numpy as np
+from pydantic import BaseModel
+import random
+from typing import Dict, List
 
 app = FastAPI()
 
-# Constants for players
-PLAYER_X = "X"
-PLAYER_O = "O"
+# Game state storage
+game_sessions: Dict[str, List[List[str]]] = {}  # session_id -> board
+current_players: Dict[str, str] = {}  # session_id -> current_player
 
-class MoveRequest(BaseModel):
-    board: List[List[Union[int, str]]]  # Board can contain integers (0 for empty) and strings ('X' or 'O')
-    current_player: str
+class Move(BaseModel):
+    session_id: str
+    row: int
+    col: int
+    player: str
 
-def check_winner(board):
-    """Check rows, columns, and diagonals for a win."""
-    for i in range(3):
-        if board[i][0] == board[i][1] == board[i][2] and board[i][0] != 0:
-            return board[i][0]
-        if board[0][i] == board[1][i] == board[2][i] and board[0][i] != 0:
-            return board[0][i]
+class ComputerMoveResponse(BaseModel):
+    session_id: str
+    row: int
+    col: int
+    board: List[List[str]]
 
-    if board[0][0] == board[1][1] == board[2][2] and board[0][0] != 0:
-        return board[0][0]
-
-    if board[0][2] == board[1][1] == board[2][0] and board[0][2] != 0:
-        return board[0][2]
-
-    # Check for draw
-    if all(cell != 0 for row in board for cell in row):
-        return "draw"
-
-    return "ongoing"
-
-def validate_board(board):
-    """Validate that the board is a 3x3 grid and contains only valid values (0, 'X', 'O')."""
-    if not isinstance(board, list) or len(board) != 3:
-        raise HTTPException(status_code=400, detail="Invalid board size. The board must be a 3x3 grid.")
-    
-    for row in board:
-        if not isinstance(row, list) or len(row) != 3:
-            raise HTTPException(status_code=400, detail="Each row must be a list of size 3.")
-        for cell in row:
-            if cell not in [0, PLAYER_X, PLAYER_O]:
-                raise HTTPException(status_code=400, detail="Invalid board values. Must be 0, 'X', or 'O'.")
-
-def validate_player(player):
-    """Validate that the player is either 'X' or 'O'."""
-    if player not in [PLAYER_X, PLAYER_O]:
-        raise HTTPException(status_code=400, detail="Invalid player. Player must be 'X' or 'O'.")
+@app.post("/start-game")
+def start_game():
+    session_id = str(len(game_sessions) + 1)  # Simple session ID generation
+    board = [['', '', ''], ['', '', ''], ['', '', '']]
+    game_sessions[session_id] = board
+    current_players[session_id] = 'X'  # X starts the game
+    return {"session_id": session_id, "board": board}
 
 @app.post("/make-move")
-def make_move_endpoint(request: MoveRequest):
-    """Process a player's move and return the updated board."""
-    validate_board(request.board)
-    validate_player(request.current_player)
+def make_move(move: Move):
+    if move.session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Game session not found.")
 
-    board = request.board
-    result = check_winner(board)
+    board = game_sessions[move.session_id]
+
+    # Check if the move is valid
+    if board[move.row][move.col] != '':
+        raise HTTPException(status_code=400, detail="Invalid move. Cell is already occupied.")
+
+    # Place the player's mark on the board
+    board[move.row][move.col] = move.player
+
+    # Check for a win or draw after player's move
+    if check_win(board, move.player):
+        return {"session_id": move.session_id, "board": board, "winner": move.player}
+    if check_draw(board):
+        return {"session_id": move.session_id, "board": board, "winner": "Draw"}
+
+    # Switch to the next player (computer)
+    computer_move = generate_computer_move(move.session_id)
+    board[computer_move.row][computer_move.col] = 'O'  # Computer plays 'O'
+
+    # Check for a win or draw after computer move
+    if check_win(board, 'O'):
+        return {"session_id": move.session_id, "board": board, "winner": 'O'}
+    if check_draw(board):
+        return {"session_id": move.session_id, "board": board, "winner": "Draw"}
+
+    return {"session_id": move.session_id, "board": board}
+
+def generate_computer_move(session_id: str):
+    board = game_sessions[session_id]
+    empty_cells = [(i, j) for i in range(3) for j in range(3) if board[i][j] == '']
+    row, col = random.choice(empty_cells)  # Randomly choose an empty cell
+    return ComputerMoveResponse(session_id=session_id, row=row, col=col, board=board)
+
+def check_win(board: List[List[str]], player: str) -> bool:
+    # Check rows, columns, and diagonals for a win
+    for i in range(3):
+        if all(cell == player for cell in board[i]):  # Check row
+            return True
+        if all(board[j][i] == player for j in range(3)):  # Check column
+            return True
+    if all(board[i][i] == player for i in range(3)):  # Check diagonal
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):  # Check anti-diagonal
+        return True
+    return False
+
+def check_draw(board: List[List[str]]) -> bool:
+    # Check if the board is full and no winner exists
+    return all(cell != '' for row in board for cell in row)
+
+@app.get("/status/{session_id}")
+def get_status(session_id: str):
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Game session not found.")
     
-    if result != "ongoing":
-        raise HTTPException(status_code=400, detail=f"Game is already over. Result: {result}.")
+    return {"session_id": session_id, "board": game_sessions[session_id]}
 
-    empty_cells = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
-    if not empty_cells:
-        raise HTTPException(status_code=400, detail="No available moves. The game is a draw.")
-
-    row, col = empty_cells[np.random.choice(len(empty_cells))]
-    board[row][col] = request.current_player
-    return {"updated_board": board}
-
-@app.post("/check-state")
-def check_game_state(request: MoveRequest):
-    """Check the current state of the game."""
-    validate_board(request.board)
-    validate_player(request.current_player)
-
-    board = request.board
-    result = check_winner(board)
-    return {"status": result}
-
-@app.post("/reset")
-def reset_game():
-    """Reset the game to an empty board."""
-    board = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
-    return {"board": board}
-
-# To run the app, use the command: uvicorn main:app --reload
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

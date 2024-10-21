@@ -17,3 +17,4 @@ pip install -r requirements.txt
 
 Running the API:
 uvicorn main:app --reload
+uvicorn your_fastapi_app:app --reload --host 0.0.0.0 --port 8000
